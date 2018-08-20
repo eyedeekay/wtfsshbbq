@@ -6,7 +6,11 @@ wtfsshbbq.go
 */
 
 import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/pem"
 	"fmt"
 	"golang.org/x/crypto/ed25519"
@@ -29,8 +33,8 @@ type SSHKeyRing struct {
 	rounds      int
 	recreatekey bool
 
-	PublicKey     ed25519.PublicKey
-	PrivateKey    ed25519.PrivateKey
+	PublicKey     crypto.PublicKey
+	PrivateKey    crypto.Signer
 	SSHPublicKey  ssh.PublicKey
 	PEMPrivateKey []byte
 	PEMKey        *pem.Block
@@ -38,10 +42,42 @@ type SSHKeyRing struct {
 	options *sshkeys.MarshalOptions
 }
 
-func (d *SSHKeyRing) GenerateRing() (ed25519.PublicKey, ed25519.PrivateKey) {
+func (d *SSHKeyRing) GenerateRing() (crypto.PublicKey, crypto.Signer) {
 	var err error
-	if d.PublicKey, d.PrivateKey, err = ed25519.GenerateKey(rand.Reader); err != nil {
-		log.Fatal(err)
+	switch t := d.ktype; t {
+	case "ed25519":
+		if d.PublicKey, d.PrivateKey, err = ed25519.GenerateKey(rand.Reader); err != nil {
+			log.Fatal(err)
+		}
+	case "rsa":
+		if d.PrivateKey, err = rsa.GenerateKey(rand.Reader, d.length); err != nil {
+			log.Fatal(err)
+		}
+		d.PublicKey = d.PrivateKey.Public()
+	case "ecdsa":
+		switch l := d.length; l {
+		case 521:
+			if d.PrivateKey, err = ecdsa.GenerateKey(elliptic.P521(), rand.Reader); err != nil {
+				log.Fatal(err)
+			}
+		case 384:
+			if d.PrivateKey, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader); err != nil {
+				log.Fatal(err)
+			}
+		case 256:
+			if d.PrivateKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
+				log.Fatal(err)
+			}
+		case 224:
+			if d.PrivateKey, err = ecdsa.GenerateKey(elliptic.P224(), rand.Reader); err != nil {
+				log.Fatal(err)
+			}
+		}
+		d.PublicKey = d.PrivateKey.Public()
+	default:
+		if d.PublicKey, d.PrivateKey, err = ed25519.GenerateKey(rand.Reader); err != nil {
+			log.Fatal(err)
+		}
 	}
 	if err = d.SaveRing(); err != nil {
 		log.Fatal(err)
@@ -51,13 +87,34 @@ func (d *SSHKeyRing) GenerateRing() (ed25519.PublicKey, ed25519.PrivateKey) {
 
 func (d *SSHKeyRing) SaveRing() error {
 	var err error
-	if d.SSHPublicKey, err = ssh.NewPublicKey(d.PublicKey); err != nil {
-		return err
+	switch t := d.ktype; t {
+	case "ed25519":
+		if d.SSHPublicKey, err = ssh.NewPublicKey(d.PublicKey.(ed25519.PublicKey)); err != nil {
+			return err
+		}
+		d.PEMKey = &pem.Block{
+			Type:  "OPENSSH PRIVATE KEY",
+			Bytes: edkey.MarshalED25519PrivateKey(d.PrivateKey.(ed25519.PrivateKey)),
+		}
+	case "rsa":
+		if d.SSHPublicKey, err = ssh.NewPublicKey(d.PrivateKey.Public()); err != nil {
+			return err
+		}
+		d.PEMKey = &pem.Block{
+			Type: "OPENSSH PRIVATE KEY",
+			//Bytes: edkey.MarshalED25519PrivateKey(d.PrivateKey.(rsa.PrivateKey)),
+		}
+	case "ecdsa":
+		if d.SSHPublicKey, err = ssh.NewPublicKey(d.PrivateKey.Public()); err != nil {
+			return err
+		}
+		d.PEMKey = &pem.Block{
+			Type: "OPENSSH PRIVATE KEY",
+			//Bytes: edkey.MarshalED25519PrivateKey(d.PrivateKey.(ecdsa.PrivateKey)),
+		}
+	default:
 	}
-	d.PEMKey = &pem.Block{
-		Type:  "OPENSSH PRIVATE KEY",
-		Bytes: edkey.MarshalED25519PrivateKey(d.PrivateKey),
-	}
+
 	d.PEMPrivateKey = pem.EncodeToMemory(d.PEMKey)
 	authorizedKey := ssh.MarshalAuthorizedKey(d.SSHPublicKey)
 	if err = ioutil.WriteFile(d.path, d.PEMPrivateKey, 0600); err != nil {
@@ -69,7 +126,7 @@ func (d *SSHKeyRing) SaveRing() error {
 	return nil
 }
 
-func (d *SSHKeyRing) CheckLoadRing(forceredo bool) (ed25519.PublicKey, ed25519.PrivateKey) {
+func (d *SSHKeyRing) CheckLoadRing(forceredo bool) (crypto.PublicKey, crypto.Signer) {
 	if forceredo {
 		d.PublicKey, d.PrivateKey = d.GenerateRing()
 	}
@@ -83,7 +140,7 @@ func (d *SSHKeyRing) CheckLoadRing(forceredo bool) (ed25519.PublicKey, ed25519.P
 	return d.PublicKey, d.PrivateKey
 }
 
-func (d *SSHKeyRing) LoadRing() (ed25519.PrivateKey, error) {
+func (d *SSHKeyRing) LoadRing() (crypto.Signer, error) {
 	if key, err := sshkeys.ParseEncryptedRawPrivateKey(d.PEMPrivateKey, nil); err != nil {
 		log.Fatal(err)
 	} else {
