@@ -22,7 +22,13 @@ import (
 )
 
 type SSHKeyRing struct {
-	path          string
+	path        string
+	ktype       string
+	htype       string
+	length      int
+	rounds      int
+	recreatekey bool
+
 	PublicKey     ed25519.PublicKey
 	PrivateKey    ed25519.PrivateKey
 	SSHPublicKey  ssh.PublicKey
@@ -87,18 +93,27 @@ func (d *SSHKeyRing) LoadRing() (ed25519.PrivateKey, error) {
 	return nil, fmt.Errorf("Error loading private key from file: %s", d.path)
 }
 
-func NewSSHKeyRing(path string, forceredo bool) (*SSHKeyRing, error) {
+func DefaultSSHKeyRing(path string, forceredo bool) (*SSHKeyRing, error) {
+	return NewSSHKeyRing(SetPath("default"), SetRecreateKey(true))
+}
+
+func NewSSHKeyRing(opts ...func(*SSHKeyRing) error) (*SSHKeyRing, error) {
 	var d SSHKeyRing
-	d.path = path
-	d.PublicKey, d.PrivateKey = d.CheckLoadRing(forceredo)
+	d.path = "default"
+	d.ktype = "rsa"
+	d.htype = "sha256"
+	d.length = 4096
+	d.rounds = 1000
+	d.recreatekey = true
+	for _, o := range opts {
+		if err := o(&d); err != nil {
+			return &d, err
+		}
+	}
+	d.PublicKey, d.PrivateKey = d.CheckLoadRing(d.recreatekey)
 	d.options = &sshkeys.MarshalOptions{
 		Passphrase: nil,
 		Format:     sshkeys.FormatClassicPEM,
 	}
-	return &d, nil
-}
-
-func NewSSHKeyRingFromOptions(opts ...func(*SSHKeyRing) error) (*SSHKeyRing, error) {
-	var d SSHKeyRing
 	return &d, nil
 }
